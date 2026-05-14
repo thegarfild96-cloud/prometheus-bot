@@ -1,0 +1,39 @@
+anomaly:
+  iqr_coef: 3.0
+  zscore_threshold: 2.5
+binance:
+  api_key: 62xf7CFxqYzWdtjRsC1iQRwk5mWkQq94qsUmyACkguexJw1I8kKGQ8iARONGZZb4
+  api_secret: CAfH6heVhbYS3TBOUXEqrcnDmjcaS5gLnjcmReV9lGlffNO4zecmNPFCqodafuQa
+  base_url: https://api.binance.com
+  history_days: 180
+  interval: 1h
+model:
+  batch_size: 64
+  dropout: 0.2
+  epochs: 30
+  lstm_units:
+  - 128
+  - 64
+  - 32
+  n_features: 20
+  patience: 10
+  window: 168
+paths:
+  charts: charts/
+  db: prometheus.db
+  models: models/
+  scalers: scalers/
+telegram:
+  token: 8602724437:AAE-bagdwZEdV0Z0aheeTS5G1w6HMNVB_cU
+trading:
+  horizons:
+  - 1
+  - 4
+  - 12
+  - 24
+  pairs:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+  - XRPUSDT
+  - DOGEUSDT
