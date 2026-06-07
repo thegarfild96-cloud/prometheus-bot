@@ -329,14 +329,111 @@ async def _send_forecast(message: Message, symbol: str, horizon: int):
         # Порог сигнала — только если вероятность достаточная
         min_threshold = 0.5 if probability >= 45 else 1.0
 
+        # ── СКОРИНГ СДЕЛКИ (1-10) ──────────────────────────────────
+        import ta as _ta
+        score = 0
+        score_details = []
+
+        # 1. Вероятность прогноза (0-3 балла)
+        if probability >= 80:
+            score += 3; score_details.append("Вероятность высокая +3")
+        elif probability >= 60:
+            score += 2; score_details.append("Вероятность средняя +2")
+        elif probability >= 45:
+            score += 1; score_details.append("Вероятность низкая +1")
+
+        # 2. Потенциал движения (0-2 балла)
+        if abs(delta_pct) >= 3:
+            score += 2; score_details.append(f"Потенциал {abs(delta_pct):.1f}% +2")
+        elif abs(delta_pct) >= 1:
+            score += 1; score_details.append(f"Потенциал {abs(delta_pct):.1f}% +1")
+
+        # 3. RSI фильтр (0-2 балла)
+        try:
+            rsi = float(_ta.momentum.rsi(df["close"], window=14).iloc[-1])
+            if delta_pct > 0:  # LONG
+                if rsi < 40:
+                    score += 2; score_details.append(f"RSI перепродан {rsi:.0f} +2")
+                elif rsi < 55:
+                    score += 1; score_details.append(f"RSI нейтральный {rsi:.0f} +1")
+                else:
+                    score_details.append(f"RSI перекуплен {rsi:.0f} -0")
+            else:  # SHORT
+                if rsi > 60:
+                    score += 2; score_details.append(f"RSI перекуплен {rsi:.0f} +2")
+                elif rsi > 45:
+                    score += 1; score_details.append(f"RSI нейтральный {rsi:.0f} +1")
+                else:
+                    score_details.append(f"RSI перепродан {rsi:.0f} -0")
+        except:
+            rsi = 50
+
+        # 4. MACD подтверждение (0-2 балла)
+        try:
+            macd_obj = _ta.trend.MACD(df["close"])
+            macd_val = float(macd_obj.macd().iloc[-1])
+            macd_sig = float(macd_obj.macd_signal().iloc[-1])
+            macd_hist = macd_val - macd_sig
+            if delta_pct > 0 and macd_hist > 0:
+                score += 2; score_details.append("MACD подтверждает LONG +2")
+            elif delta_pct < 0 and macd_hist < 0:
+                score += 2; score_details.append("MACD подтверждает SHORT +2")
+            else:
+                score_details.append("MACD против сигнала +0")
+        except:
+            pass
+
+        # 5. Аномалия (штраф -1)
+        if anomaly["flag"]:
+            score -= 1; score_details.append("Аномалия обнаружена -1")
+
+        score = max(0, min(10, score))
+
+        # Эмодзи оценки
+        if score >= 8:
+            score_emoji = "🔥"
+            score_label = "Отличная сделка"
+        elif score >= 6:
+            score_emoji = "✅"
+            score_label = "Хорошая сделка"
+        elif score >= 4:
+            score_emoji = "⚠️"
+            score_label = "Средняя сделка"
+        else:
+            score_emoji = "❌"
+            score_label = "Слабая сделка"
+
         if delta_pct > min_threshold and reliable:
             strength = min(abs(delta_pct) * 10, 100)
-            signal_block = f"\n━━━━━━━━━━━━━━━━\nСигнал: <b>🟢 LONG</b> ({strength:.0f}%)\nВероятность: <b>{probability}%</b> {prob_label}\nВход: <b>${current:,.2f}</b> | Стоп: <b>${current*0.995:,.2f}</b>\nЦель: <b>${predicted:,.2f}</b> | Потенциал: <b>{abs(delta_pct):.2f}%</b>\n━━━━━━━━━━━━━━━━"
+            signal_block = (
+                f"\n━━━━━━━━━━━━━━━━\n"
+                f"Сигнал: <b>🟢 LONG</b> ({strength:.0f}%)\n"
+                f"Вероятность: <b>{probability}%</b> {prob_label}\n"
+                f"Скоринг: <b>{score}/10</b> {score_emoji} {score_label}\n"
+                f"Вход: <b>${current:,.2f}</b> | Стоп: <b>${current*0.995:,.2f}</b>\n"
+                f"Цель: <b>${predicted:,.2f}</b> | Потенциал: <b>{abs(delta_pct):.2f}%</b>\n"
+                f"━━━━━━━━━━━━━━━━"
+            )
         elif delta_pct < -min_threshold and reliable:
             strength = min(abs(delta_pct) * 10, 100)
-            signal_block = f"\n━━━━━━━━━━━━━━━━\nСигнал: <b>🔴 SHORT</b> ({strength:.0f}%)\nВероятность: <b>{probability}%</b> {prob_label}\nВход: <b>${current:,.2f}</b> | Стоп: <b>${current*1.005:,.2f}</b>\nЦель: <b>${predicted:,.2f}</b> | Потенциал: <b>{abs(delta_pct):.2f}%</b>\n━━━━━━━━━━━━━━━━"
+            signal_block = (
+                f"\n━━━━━━━━━━━━━━━━\n"
+                f"Сигнал: <b>🔴 SHORT</b> ({strength:.0f}%)\n"
+                f"Вероятность: <b>{probability}%</b> {prob_label}\n"
+                f"Скоринг: <b>{score}/10</b> {score_emoji} {score_label}\n"
+                f"Вход: <b>${current:,.2f}</b> | Стоп: <b>${current*1.005:,.2f}</b>\n"
+                f"Цель: <b>${predicted:,.2f}</b> | Потенциал: <b>{abs(delta_pct):.2f}%</b>\n"
+                f"━━━━━━━━━━━━━━━━"
+            )
         else:
-            signal_block = f"\n━━━━━━━━━━━━━━━━\nСигнал: <b>⚪ НЕЙТРАЛЬНО</b>\nВероятность: <b>{probability}%</b> {prob_label}\nCI шире изменения — ждём чёткого движения\n━━━━━━━━━━━━━━━━"
+            signal_block = (
+                f"\n━━━━━━━━━━━━━━━━\n"
+                f"Сигнал: <b>⚪ НЕЙТРАЛЬНО</b>\n"
+                f"Вероятность: <b>{probability}%</b> {prob_label}\n"
+                f"Скоринг: <b>{score}/10</b> {score_emoji}\n"
+                f"CI шире изменения — ждём чёткого движения\n"
+                f"━━━━━━━━━━━━━━━━"
+            )
 
         warn = f"\n\n{anomaly['message']}" if anomaly["flag"] else ""
 
@@ -494,8 +591,11 @@ async def cmd_unsubscribe(message: Message):
     ALERT_CHAT_IDS.discard(message.chat.id)
     await message.answer("❌ Уведомления отключены.")
 
+# Кэш последних уведомлений — не спамим чаще раза в час по одной паре
+_last_alert = {}
+
 async def check_and_alert():
-    """Проверяет рынок каждые 15 минут и шлёт уведомления."""
+    """Проверяет рынок каждые 15 минут и шлёт только топовые сигналы."""
     if not ALERT_CHAT_IDS:
         return
     if not ENGINES:
@@ -527,20 +627,77 @@ async def check_and_alert():
             # Формируем алерт
             alerts = []
 
-            if delta_pct > 5:
+            # ── ПОЛНЫЙ СКОРИНГ ДЛЯ УВЕДОМЛЕНИЙ ──────────────────
+            import ta as _ta2
+            score_a = 0
+            try:
+                rsi_a     = float(_ta2.momentum.rsi(df["close"], window=14).iloc[-1])
+                macd_obj  = _ta2.trend.MACD(df["close"])
+                macd_h_a  = float(macd_obj.macd().iloc[-1]) - float(macd_obj.macd_signal().iloc[-1])
+
+                # RSI (0-2)
+                if delta_pct > 0:
+                    if rsi_a < 40:   score_a += 2
+                    elif rsi_a < 55: score_a += 1
+                else:
+                    if rsi_a > 60:   score_a += 2
+                    elif rsi_a > 45: score_a += 1
+
+                # MACD (0-2)
+                if delta_pct > 0 and macd_h_a > 0: score_a += 2
+                elif delta_pct < 0 and macd_h_a < 0: score_a += 2
+
+                # Потенциал (0-2)
+                if abs(delta_pct) >= 3:   score_a += 2
+                elif abs(delta_pct) >= 1: score_a += 1
+
+                # Вероятность CI (0-2)
+                ci_w = abs(ci_high - ci_low)
+                ci_h = ci_w / 2 if ci_w > 0 else 1
+                prob_a = min(100, abs(delta_pct) / (ci_h / current * 100 + 1e-8) * 50)
+                if prob_a >= 70:   score_a += 2
+                elif prob_a >= 50: score_a += 1
+
+                # Аномалия — штраф
+                if anomaly["flag"]: score_a -= 2
+
+                score_a = max(0, min(10, score_a))
+            except:
+                score_a = 0
+                rsi_a   = 50
+
+            # Антиспам — не чаще раза в час на пару+направление
+            from datetime import datetime as _dt
+            now_ts   = _dt.utcnow().timestamp()
+            cache_key = f"{symbol}_{'+' if delta_pct > 0 else '-'}"
+            last_ts   = _last_alert.get(cache_key, 0)
+            cooldown  = now_ts - last_ts < 3600  # 1 час
+
+            # Отправляем только скоринг ≥ 7 и потенциал ≥ 1% и нет спама
+            if score_a >= 7 and abs(delta_pct) >= 1 and not cooldown:
+                direction = "LONG" if delta_pct > 0 else "SHORT"
+                emoji_dir = "🚀" if delta_pct > 0 else "🔻"
+                stop = current * 0.995 if delta_pct > 0 else current * 1.005
+                rr   = abs(delta_pct) / 0.5  # Risk/Reward (стоп 0.5%)
+
+                if score_a >= 9:   quality = "🔥🔥 СУПЕР СИГНАЛ"
+                elif score_a >= 8: quality = "🔥 Отличный сигнал"
+                else:              quality = "✅ Хороший сигнал"
+
                 alerts.append(
-                    f"🚀 <b>СИЛЬНЫЙ СИГНАЛ LONG — {symbol}</b>\n"
-                    f"Текущая цена: ${current:,.2f}\n"
-                    f"Прогноз: ${predicted:,.2f} (+{delta_pct:.2f}%)\n"
-                    f"Стоп: ${current*0.995:,.2f} | Цель: ${predicted:,.2f}"
+                    f"{emoji_dir} <b>{quality} — {symbol}</b>\n\n"
+                    f"Направление: <b>{direction}</b>\n"
+                    f"Скоринг: <b>{score_a}/10</b>\n"
+                    f"Текущая цена: <b>${current:,.4f}</b>\n"
+                    f"Прогноз: <b>${predicted:,.4f}</b> ({delta_pct:+.2f}%)\n"
+                    f"Вход: <b>${current:,.4f}</b>\n"
+                    f"Стоп: <b>${stop:,.4f}</b> (−0.5%)\n"
+                    f"Цель: <b>${predicted:,.4f}</b>\n"
+                    f"R/R: <b>{rr:.1f}</b>\n"
+                    f"RSI: {rsi_a:.0f} | Потенциал: {abs(delta_pct):.2f}%\n\n"
+                    f"<i>⚠️ Не является инвестиционной рекомендацией</i>"
                 )
-            elif delta_pct < -5:
-                alerts.append(
-                    f"🔻 <b>СИЛЬНЫЙ СИГНАЛ SHORT — {symbol}</b>\n"
-                    f"Текущая цена: ${current:,.2f}\n"
-                    f"Прогноз: ${predicted:,.2f} ({delta_pct:.2f}%)\n"
-                    f"Стоп: ${current*1.005:,.2f} | Цель: ${predicted:,.2f}"
-                )
+                _last_alert[cache_key] = now_ts
 
             if anomaly["flag"] and anomaly["level"] == "critical":
                 alerts.append(
@@ -883,6 +1040,114 @@ async def cmd_backtest(message: Message):
             f"Не гарантирует будущих результатов.</i>"
         )
         await message.answer(text, parse_mode="HTML")
+
+    except Exception as e:
+        logger.exception(e)
+        await message.answer(f"Ошибка: {e}")
+
+
+
+@router.message(Command("top"))
+async def cmd_top(message: Message):
+    """Топ-3 лучших сигнала прямо сейчас по всем парам."""
+    await message.answer("⏳ Анализирую все пары...")
+
+    try:
+        import ta as _ta
+        from collector import load_candles_from_db, update_latest
+        from anomaly import AnomalyDetector
+
+        results = []
+
+        for symbol in PAIRS:
+            if symbol not in ENGINES:
+                continue
+            try:
+                update_latest(symbol)
+                df = load_candles_from_db(symbol, limit=5000)
+                pipe   = PIPELINES[symbol]
+                engine = ENGINES[symbol]
+                close_idx = pipe.feature_cols.index("close") if "close" in pipe.feature_cols else 3
+
+                X = pipe.transform(df)
+                predicted, ci_low, ci_high = engine.predict_price(
+                    X, pipe.scaler, close_idx, horizon=1)
+
+                live    = get_live_price(symbol)
+                current = live["price"] if live else float(df["close"].iloc[-1])
+                delta_pct = (predicted - current) / current * 100
+
+                # Скоринг
+                score = 0
+                rsi = 50
+                try:
+                    rsi = float(_ta.momentum.rsi(df["close"], window=14).iloc[-1])
+                    macd_o = _ta.trend.MACD(df["close"])
+                    macd_h = float(macd_o.macd().iloc[-1]) - float(macd_o.macd_signal().iloc[-1])
+                    if delta_pct > 0:
+                        if rsi < 40: score += 2
+                        elif rsi < 55: score += 1
+                        if macd_h > 0: score += 2
+                    else:
+                        if rsi > 60: score += 2
+                        elif rsi > 45: score += 1
+                        if macd_h < 0: score += 2
+                    if abs(delta_pct) >= 3: score += 2
+                    elif abs(delta_pct) >= 1: score += 1
+                    ci_w = abs(ci_high - ci_low)
+                    ci_h = ci_w / 2 if ci_w > 0 else 1
+                    prob = min(100, abs(delta_pct) / (ci_h / current * 100 + 1e-8) * 50)
+                    if prob >= 70: score += 2
+                    elif prob >= 50: score += 1
+                except:
+                    pass
+
+                detector = AnomalyDetector()
+                anomaly  = detector.check(df)
+                if anomaly["flag"]: score -= 2
+                score = max(0, min(10, score))
+
+                direction = "🟢 LONG" if delta_pct > 0 else "🔴 SHORT"
+                results.append({
+                    "symbol":    symbol,
+                    "score":     score,
+                    "delta":     delta_pct,
+                    "current":   current,
+                    "predicted": predicted,
+                    "direction": direction,
+                    "rsi":       rsi,
+                    "anomaly":   anomaly["flag"],
+                })
+            except Exception as e:
+                logger.warning(f"Top error {symbol}: {e}")
+
+        if not results:
+            await message.answer("Нет данных по парам.")
+            return
+
+        # Сортируем по скорингу
+        results.sort(key=lambda x: x["score"], reverse=True)
+        top3 = results[:3]
+
+        lines = ["🏆 <b>Топ сигналы прямо сейчас</b>\n"]
+        for i, r in enumerate(top3):
+            if r["score"] >= 8:   emoji = "🔥"
+            elif r["score"] >= 6: emoji = "✅"
+            elif r["score"] >= 4: emoji = "⚠️"
+            else:                  emoji = "❌"
+
+            stop = r["current"] * 0.995 if r["delta"] > 0 else r["current"] * 1.005
+            anomaly_str = " ⚠️ Аномалия!" if r["anomaly"] else ""
+
+            lines.append(
+                f"{i+1}. {emoji} <b>{r['symbol']}</b> — {r['direction']}\n"
+                f"   Скоринг: <b>{r['score']}/10</b>{anomaly_str}\n"
+                f"   Цена: <b>${r['current']:,.4f}</b> → <b>${r['predicted']:,.4f}</b> ({r['delta']:+.2f}%)\n"
+                f"   RSI: {r['rsi']:.0f} | Стоп: ${stop:,.4f}\n"
+            )
+
+        lines.append("<i>Горизонт: 1ч | Обновлено прямо сейчас</i>")
+        await message.answer("\n".join(lines), parse_mode="HTML")
 
     except Exception as e:
         logger.exception(e)
